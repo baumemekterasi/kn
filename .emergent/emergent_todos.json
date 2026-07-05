@@ -12,23 +12,23 @@
     "status": "completed"
   },
   {
-    "content": "FIX Cluster 4: IDOR-WRITE (verified LEAK=0 both directions)",
+    "content": "FIX Cluster 4: IDOR-WRITE (LEAK=0 both directions, same-entity OK)",
     "status": "completed"
   },
   {
-    "content": "FIX Cluster 5: Import hardening (non-UTF8, formula-escape, price, image scheme)",
+    "content": "FIX Cluster 5: Import hardening",
     "status": "completed"
   },
   {
-    "content": "FIX Cluster 6: VAL-UOM + ONBOARD-NOOP (verified)",
+    "content": "FIX Cluster 6: VAL-UOM + ONBOARD-NOOP",
     "status": "completed"
   },
   {
-    "content": "FIX Cluster 7: INV-GL-DRIFT true-up (verified: recon PASS). COGS-ZERO documented as gated WARN follow-up",
+    "content": "FIX Cluster 7: INV-GL-DRIFT true-up (recon PASS)",
     "status": "completed"
   },
   {
-    "content": "Final: consolidated forensic re-run + gate + testing_agent regression, update report",
-    "status": "in_progress"
+    "content": "Final: consolidated forensic + gate + testing_agent (28/28 PASS) + SESSION_075 report",
+    "status": "completed"
   }
 ]
