@@ -11,53 +11,6 @@ const config = {
   enableHealthCheck: process.env.ENABLE_HEALTH_CHECK === "true",
 };
 
-function makeDevServerV5Compatible(devServerConfig) {
-  const {
-    https,
-    onAfterSetupMiddleware,
-    onBeforeSetupMiddleware,
-    onListening,
-    setupMiddlewares,
-    ...compatibleConfig
-  } = devServerConfig;
-
-  compatibleConfig.server =
-    typeof https === "object"
-      ? { type: "https", options: https }
-      : https
-        ? "https"
-        : "http";
-  compatibleConfig.headers = {
-    ...compatibleConfig.headers,
-    "Cross-Origin-Resource-Policy": "same-origin",
-  };
-
-  if (onBeforeSetupMiddleware || setupMiddlewares) {
-    compatibleConfig.setupMiddlewares = (middlewares, devServer) => {
-      if (onBeforeSetupMiddleware) {
-        onBeforeSetupMiddleware(devServer);
-      }
-
-      return setupMiddlewares
-        ? setupMiddlewares(middlewares, devServer)
-        : middlewares;
-    };
-  }
-
-  compatibleConfig.onListening = (devServer) => {
-    devServer.close ??= (callback) => devServer.stopCallback(callback);
-
-    if (onListening) {
-      onListening(devServer);
-    }
-    if (onAfterSetupMiddleware) {
-      onAfterSetupMiddleware(devServer);
-    }
-  };
-
-  return compatibleConfig;
-}
-
 // Conditionally load health check modules only if enabled
 let WebpackHealthPlugin;
 let setupHealthEndpoints;
@@ -102,28 +55,53 @@ let webpackConfig = {
       if (config.enableHealthCheck && healthPluginInstance) {
         webpackConfig.plugins.push(healthPluginInstance);
       }
+
+      // Suppress benign "Failed to parse source map" warnings from 3rd-party
+      // packages (mis. @zxing/browser yang merujuk file .ts yang tidak ikut di-publish).
+      webpackConfig.ignoreWarnings = [
+        ...(webpackConfig.ignoreWarnings || []),
+        /Failed to parse source map/,
+      ];
       return webpackConfig;
     },
   },
 };
 
 webpackConfig.devServer = (devServerConfig) => {
-  // Add health check endpoints if enabled
-  if (config.enableHealthCheck && setupHealthEndpoints && healthPluginInstance) {
-    const originalSetupMiddlewares = devServerConfig.setupMiddlewares;
+  // webpack-dev-server v5 removed onBeforeSetupMiddleware/onAfterSetupMiddleware
+  // (react-scripts/CRA still injects them → schema validation crash). Translate them
+  // into the v5-compatible `setupMiddlewares` hook so CRA dev middleware keeps working.
+  const beforeMw = devServerConfig.onBeforeSetupMiddleware;
+  const afterMw = devServerConfig.onAfterSetupMiddleware;
+  delete devServerConfig.onBeforeSetupMiddleware;
+  delete devServerConfig.onAfterSetupMiddleware;
 
-    devServerConfig.setupMiddlewares = (middlewares, devServer) => {
-      // Call original setup if exists
-      if (originalSetupMiddlewares) {
-        middlewares = originalSetupMiddlewares(middlewares, devServer);
-      }
-
-      // Setup health endpoints
-      setupHealthEndpoints(devServer, healthPluginInstance);
-
-      return middlewares;
-    };
+  // v5 removed the `https`/`http2` keys (replaced by `server`). CRA still sets `https`.
+  if ("https" in devServerConfig) {
+    const httpsVal = devServerConfig.https;
+    delete devServerConfig.https;
+    if (httpsVal) {
+      devServerConfig.server =
+        typeof httpsVal === "object"
+          ? { type: "https", options: httpsVal }
+          : { type: "https" };
+    }
   }
+  if ("http2" in devServerConfig) delete devServerConfig.http2;
+
+  const originalSetupMiddlewares = devServerConfig.setupMiddlewares;
+  devServerConfig.setupMiddlewares = (middlewares, devServer) => {
+    if (typeof beforeMw === "function") beforeMw(devServer);
+    if (typeof originalSetupMiddlewares === "function") {
+      middlewares = originalSetupMiddlewares(middlewares, devServer);
+    }
+    // Setup health endpoints if enabled
+    if (config.enableHealthCheck && setupHealthEndpoints && healthPluginInstance) {
+      setupHealthEndpoints(devServer, healthPluginInstance);
+    }
+    if (typeof afterMw === "function") afterMw(devServer);
+    return middlewares;
+  };
 
   return devServerConfig;
 };
@@ -143,9 +121,5 @@ if (isDevServer) {
     }
   }
 }
-
-const configureDevServer = webpackConfig.devServer;
-webpackConfig.devServer = (devServerConfig) =>
-  makeDevServerV5Compatible(configureDevServer(devServerConfig));
 
 module.exports = webpackConfig;

@@ -1,0 +1,42 @@
+[
+  {
+    "content": "Env setup: copy repo into /app, install deps, seed clean DB, boot services",
+    "status": "completed"
+  },
+  {
+    "content": "Baseline verify: logins, entity IDs, integrity gate, AUDIT-ONLY manifest",
+    "status": "completed"
+  },
+  {
+    "content": "Re-confirm known bugs empirically on clean DB",
+    "status": "completed"
+  },
+  {
+    "content": "Point #1: error-path sweep + semantic assertions",
+    "status": "completed"
+  },
+  {
+    "content": "Point #3: import master-data fuzz",
+    "status": "completed"
+  },
+  {
+    "content": "Point #4: landed-cost GL + consolidation VALUE level",
+    "status": "completed"
+  },
+  {
+    "content": "Point #2: 2-way IDOR matrix",
+    "status": "completed"
+  },
+  {
+    "content": "Point #5: E2E frontend deep interaction",
+    "status": "completed"
+  },
+  {
+    "content": "Compile comprehensive SESSION_074 remediation report",
+    "status": "completed"
+  },
+  {
+    "content": "Final AUDIT-ONLY verification (manifest unchanged, gate green, services up)",
+    "status": "completed"
+  }
+]
