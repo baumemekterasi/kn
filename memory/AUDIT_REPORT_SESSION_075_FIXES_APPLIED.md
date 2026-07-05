@@ -68,3 +68,39 @@ python seed_realistic.py && python forensic/fa_import_fuzz.py         # non-UTF8
 2. **FE-A11Y-DIALOG (P3):** tambah `DialogTitle` (VisuallyHidden) pada dialog Radix terkait.
 3. **IMP-XENT-CLOBBER (observasi):** tampilkan diff nilai lama saat import meng-overwrite SKU SHARED (audit trail), bila diinginkan.
 4. **VB-PAY / cash lain:** pertimbangkan posting GL inline seragam (kini benar via backfill) untuk konsistensi.
+
+---
+
+## VERIFIKASI BERLAPIS (adversarial) — atas permintaan skeptisisme
+
+Fix diverifikasi lewat **5 lapis independen**. Semua hijau.
+
+### Lapis 1 — Probe kebenaran + idempotensi (`forensic/fa_s075_verify.py`) → **31/31 PASS**
+Bukan sekadar "JE ada", tapi akun/nilai persis, **idempotensi eksekusi-ganda**, dan round-trip trial-balance:
+- **RET-2:** JE seimbang `327450=327450`; membalik Pendapatan(Dr 4-1000)+Piutang(Cr 1-1200) & COGS(Dr 1-1300/Cr 5-1000); **re-approve → TIDAK ada duplikat CN/JE, stok tak dobel**; TB seimbang.
+- **PRET-GL:** JE seimbang, Cr Persediaan + Dr Hutang/GR-IR; re-approve idempotent.
+- **VB-CANCEL-GL:** posting Hutang **−27.472.500 → cancel → 0 PERSIS** (reversal net-nol); **re-cancel tak over-reverse**.
+- **LC-APPLY-GL:** Persediaan `533.649.600 → 536.649.600` (+3jt persis); **re-approve tak menggandakan** JE/Persediaan.
+- **GLOBAL:** semua JE posted seimbang; TB `ent_ksc` & `ent_kanda` seimbang.
+
+### Lapis 2 — Korpus test HISTORIS repo (regresi objektif)
+Test milik repo sendiri (bukan buatan sesi ini), diarahkan ke environment ini:
+- `backend/test_f3_aftersales_smoke.py` → **PASS** (retur → CN-00003, cogs 610500, TB seimbang before/after) — persis area RET-2.
+- `backend/test_f3_smoke.py` → **PASS** (lifecycle special-order).
+- `test_f2b_backend.py` → **18/18 PASS** (entity-scope/RBAC) — bukti guard IDOR tak merusak scoping.
+- `test_landed_cost_poc.py` → **17/0 PASS** (lifecycle LC + idempotensi re-approve→409).
+- `test_price_approvals_backend.py` → **8/8 PASS**.
+
+### Lapis 3 — Testing-agent independen → **28/28 backend PASS**, 0 regresi
+Termasuk regresi kritis: user `sales@` (ent_ksc) **tetap** bisa GET/PATCH order ent_ksc (guard tak over-block same-entity); `sales3@` (ent_kanda) diblok 404 pada order ent_ksc.
+
+### Lapis 4 — Review kode independen (troubleshooter, read-only) → **"SHIP IT"**
+Mengonfirmasi: reversal ter-guard status; pilihan akun PRET benar; Hutang landed-cost net-nol; admin/manager (cross-entity) TIDAK over-block; `data_only=True` benar untuk import; image kosong tetap pakai default; semua posting idempotent. **0 regresi / 0 bug edge-case.**
+
+### Lapis 5 — Gate diperkuat → **PASS 123 / FAIL 0 / WARN 1**; mutation JE tak seimbang kini **FAIL**.
+
+### Temuan PRE-EXISTING ditemukan saat verifikasi (BUKAN regresi dari fix ini — untuk kejujuran)
+Dari `test_vendor_bill_backend.py` (50/52), 2 gagal di kode yang **tidak** saya sentuh:
+- **VB-PPN-NONPKP (perlu triage):** entitas non-PKP tetap mendapat `ppn_amount>0` saat vendor-bill dibuat (logika PPN di pembuatan bill, bukan cancel).
+- **VB-VIEW-PERM (perlu triage):** role `sales` dapat melihat daftar vendor-bill (`permissions_config` memberi `vendor_bill:view` ke sales) — test mengharapkan 403.
+Keduanya kandidat perbaikan terpisah; di luar scope fix sesi ini.
