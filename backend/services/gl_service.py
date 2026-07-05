@@ -624,6 +624,14 @@ async def _order_item_unit_cost(order: Dict[str, Any], item: Dict[str, Any]) -> 
     return float(w.get("wac") or 0)
 
 
+async def _avg_unit_cost(product_id: str, entity_id: str = "") -> float:
+    """WAC per produk untuk COGS reversal retur (F3). Fallback 0 bila cost tak diketahui.
+    Session #074 (RET-2): helper ini sebelumnya HILANG sehingga return_service.py:75
+    melempar AttributeError (ditelan try/except) → Credit Note & jurnal retur tak terbentuk."""
+    w = await costing_service.wac_for_product(product_id, entity_id=entity_id or None)
+    return float(w.get("wac") or 0)
+
+
 async def post_order_cogs(order: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """F3/F-7 — HPP penjualan: Dr HPP / Cr Persediaan = Σ(qty × cost roll aktual).
     Idempotent (source_type='sales_cogs'). Skip bila cost tak diketahui (0)."""
@@ -911,6 +919,84 @@ async def post_vendor_bill(bill: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         created_by="system", source_label=num)
 
 
+async def reverse_vendor_bill(bill: Dict[str, Any], reason: str = "",
+                              actor_name: str = "system") -> Optional[Dict[str, Any]]:
+    """Session #074 (VB-CANCEL-GL) — balik jurnal Vendor Bill saat bill posted dibatalkan.
+    Idempotent (source_type='vendor_bill_reversal'). Membalik Dr↔Cr dari JE vendor_bill."""
+    bid = bill.get("id")
+    if not bid or await _already_posted("vendor_bill_reversal", bid):
+        return None
+    je = await db.journal_entries.find_one(
+        {"source_type": "vendor_bill", "source_id": bid, "status": {"$ne": "void"}}, {"_id": 0})
+    if not je:
+        return None
+    lines = [{"account_code": l["account_code"],
+              "debit": float(l.get("credit", 0) or 0),
+              "credit": float(l.get("debit", 0) or 0),
+              "description": f"Reversal: {l.get('description', '')}".strip()}
+             for l in je.get("lines", [])]
+    rev = await _insert_entry(
+        lines=lines,
+        description=f"Reversal {je.get('number')} — {reason or 'bill dibatalkan'}",
+        date=now_iso(), source_type="vendor_bill_reversal", source_id=bid,
+        entity_id=je.get("entity_id", ""), created_by=actor_name,
+        source_label=je.get("source_label", ""))
+    await db.journal_entries.update_one(
+        {"id": je["id"]},
+        {"$set": {"reversed": True, "reversed_at": now_iso(),
+                  "reversal_id": rev["id"], "updated_at": now_iso()}})
+    return rev
+
+
+async def post_purchase_return(ret: Dict[str, Any], *, amount: float, ppn: float = 0.0,
+                               label: str = "") -> Optional[Dict[str, Any]]:
+    """Session #074 (PRET-GL) — Retur beli (Nota Debit) → balik GL.
+      Dr Hutang(2-1100)|GR-IR(2-1150) / Cr Persediaan(1-1300) [+ Cr PPN Masukan(1-1500)].
+    Pilih debit Hutang bila PO sudah ditagih (ada vendor_bill posted), else GR/IR.
+    Idempotent (source_type='purchase_return')."""
+    rid = ret.get("id")
+    amount = round(float(amount or 0), 2)
+    if not rid or amount <= EPS or await _already_posted("purchase_return", rid):
+        return None
+    await seed_default_coa()
+    ppn = round(float(ppn or 0), 2)
+    net = round(amount - ppn, 2)
+    debit_acc = ACC_GRIR
+    po_id = ret.get("po_id")
+    if po_id and await db.vendor_bills.find_one(
+            {"po_id": po_id, "status": {"$in": ["posted", "paid"]}}, {"_id": 0, "id": 1}):
+        debit_acc = ACC_HUTANG
+    lines = [{"account_code": debit_acc, "debit": amount, "credit": 0.0,
+              "description": f"Retur beli {label} (Nota Debit)"},
+             {"account_code": ACC_PERSEDIAAN, "debit": 0.0, "credit": net,
+              "description": f"Barang keluar retur beli {label}"}]
+    if ppn > EPS:
+        lines.append({"account_code": ACC_PPN_IN, "debit": 0.0, "credit": ppn,
+                      "description": f"Reversal PPN Masukan {label}"})
+    return await _insert_entry(
+        lines=lines, description=f"Retur beli {label}",
+        date=ret.get("approved_at") or now_iso(), source_type="purchase_return",
+        source_id=rid, entity_id=ret.get("entity_id", ""), created_by="system", source_label=label)
+
+
+async def post_landed_cost(voucher: Dict[str, Any], *, amount: float,
+                           label: str = "") -> Optional[Dict[str, Any]]:
+    """Session #074 (LC-APPLY-GL) — kapitalisasi landed cost ke GL.
+      Dr Persediaan(1-1300) / Cr Hutang(2-1100).
+    Konsisten dgn LC-PAY (bayar = Dr Hutang / Cr Kas). Idempotent (source_type='landed_cost')."""
+    vid = voucher.get("id")
+    amount = round(float(amount or 0), 2)
+    if not vid or amount <= EPS or await _already_posted("landed_cost", vid):
+        return None
+    await seed_default_coa()
+    lines = _balanced_pair(ACC_PERSEDIAAN, ACC_HUTANG, amount,
+                           f"Kapitalisasi landed cost {label}")
+    return await _insert_entry(
+        lines=lines, description=f"Landed cost {label}", date=now_iso(),
+        source_type="landed_cost", source_id=vid, entity_id=voucher.get("entity_id", ""),
+        created_by="system", source_label=label)
+
+
 async def post_sales_return(ret: Dict[str, Any], *, return_net: float, return_ppn: float,
                             return_cogs: float, is_cash: bool = False,
                             credit_note_number: str = "") -> Optional[Dict[str, Any]]:
@@ -978,7 +1064,7 @@ async def post_cash_transaction(txn: Dict[str, Any]) -> Optional[Dict[str, Any]]
         if ref_type == "vendor_bill":
             contra = ACC_HUTANG
         elif ref_type == "landed_cost":
-            contra = ACC_LANDED
+            contra = ACC_HUTANG   # S#074 (LC-PAY): lunasi Hutang landed-cost (dikapitalisasi ke Persediaan), bukan Beban Angkut (double-count)
         else:
             contra = ACC_BEBAN_OPS
             cat = (txn.get("category") or "").lower()

@@ -452,6 +452,10 @@ async def cancel_vendor_bill(bill_id: str, payload: VendorBillDecision, request:
                   "cancel_reason": payload.notes, "cancelled_at": now_iso(), "updated_at": now_iso()},
          "$push": {"timeline": timeline_entry("cancelled", "Bill dibatalkan", actor["name"], payload.notes or "")}},
         projection={"_id": 0}, return_document=ReturnDocument.AFTER)
+    # S#074 (VB-CANCEL-GL): balik jurnal bila bill sudah posted (kembalikan saldo Hutang/GR-IR/PPN)
+    if bill.get("status") == "posted":
+        from services import gl_service
+        await gl_service.reverse_vendor_bill(bill, reason=payload.notes or "", actor_name=actor["name"])
     await sync_po_billing(bill["po_id"])
     await audit(actor["name"], "vendor_bill_cancelled", "vendor_bill", bill_id,
                 {"bill_number": bill.get("bill_number")})

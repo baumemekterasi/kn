@@ -254,6 +254,10 @@ async def approve_landed_cost(voucher_id: str, request: Request) -> Dict[str, An
              "applied", "Disetujui & dialokasikan ke HPP roll", actor["name"],
              f"{applied_count} roll · Rp {alloc['allocated_total']:,.0f} · basis {alloc['basis']}")}},
         projection={"_id": 0}, return_document=ReturnDocument.AFTER)
+    # S#074 (LC-APPLY-GL): kapitalisasi landed cost ke GL (Dr Persediaan / Cr Hutang)
+    from services import gl_service
+    await gl_service.post_landed_cost(updated, amount=alloc["allocated_total"],
+                                      label=v.get("voucher_number", voucher_id))
     await audit(actor["name"], "landed_cost_applied", "landed_cost", voucher_id, {
         "voucher_number": v.get("voucher_number"), "rolls": applied_count,
         "allocated": alloc["allocated_total"], "basis": alloc["basis"]})
@@ -313,6 +317,9 @@ async def pay_landed_cost(voucher_id: str, payload: LandedCostPaymentCreate, req
         "created_by": actor["name"], "created_at": now_iso(), "updated_at": now_iso(),
     }
     await db.cash_transactions.insert_one(cash_doc)
+    # S#074 (LC-PAY): posting GL inline (Dr Hutang / Cr Kas) — idempotent, tak menunggu backfill
+    from services import gl_service
+    await gl_service.post_cash_transaction(cash_doc)
     payment = {
         "id": new_id("pay"), "amount": amount, "method": payload.method,
         "cash_txn_id": cash_doc["id"], "cash_txn_number": cash_doc["number"],

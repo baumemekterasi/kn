@@ -9,6 +9,7 @@ from schemas import PaymentSimulationCreate
 from services import gl_service
 from services.customer_service import order_payment_method, NON_AR_METHODS
 from services.ar_receipt_service import _cash_routing
+from entity_scope import entity_ctx, assert_entity_access
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -32,6 +33,7 @@ async def simulate_payment(order_id: str, payload: PaymentSimulationCreate, requ
     order = safe_doc(await db.sales_orders.find_one({"id": order_id}, {"_id": 0}))
     if not order:
         raise HTTPException(status_code=404, detail="Order tidak ditemukan")
+    assert_entity_access(order, "sales_orders", await entity_ctx(request))  # S#074 IDOR-WRITE
     invoice_count = await db.invoices.count_documents({"order_id": order_id}) + 1
     # Fase 1B — invoice mengikuti breakdown pajak order (server-authoritative).
     grand_total = float(order.get("grand_total", order.get("total_amount", 0)) or 0)

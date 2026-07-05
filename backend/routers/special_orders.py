@@ -524,10 +524,11 @@ async def patch_special_order(
     await require_permission(request, "order", "update")
     user = await current_user(request)
     
+    ctx = await entity_ctx(request)
     special_order = await db.special_orders.find_one({"id": order_id}, {"_id": 0})
     if not special_order:
         raise HTTPException(status_code=404, detail="Special order tidak ditemukan")
-    
+    assert_entity_access(special_order, "special_orders", ctx)  # S#074 IDOR
     if special_order["status"] != "draft":
         raise HTTPException(
             status_code=400,

@@ -1,42 +1,34 @@
 [
   {
-    "content": "Env setup: copy repo into /app, install deps, seed clean DB, boot services",
+    "content": "FIX Cluster 1: Harden integrity gate (META-GATE-GL)",
     "status": "completed"
   },
   {
-    "content": "Baseline verify: logins, entity IDs, integrity gate, AUDIT-ONLY manifest",
+    "content": "FIX Cluster 2: RET-2 + RET-500 + RET-ATT-NOOP",
     "status": "completed"
   },
   {
-    "content": "Re-confirm known bugs empirically on clean DB",
+    "content": "FIX Cluster 3: GL family — PRET-GL, VB-CANCEL-GL, LC-APPLY-GL, LC-PAY",
     "status": "completed"
   },
   {
-    "content": "Point #1: error-path sweep + semantic assertions",
+    "content": "FIX Cluster 4: IDOR-WRITE (verified LEAK=0 both directions)",
     "status": "completed"
   },
   {
-    "content": "Point #3: import master-data fuzz",
+    "content": "FIX Cluster 5: Import hardening (non-UTF8, formula-escape, price, image scheme)",
     "status": "completed"
   },
   {
-    "content": "Point #4: landed-cost GL + consolidation VALUE level",
+    "content": "FIX Cluster 6: VAL-UOM + ONBOARD-NOOP (verified)",
     "status": "completed"
   },
   {
-    "content": "Point #2: 2-way IDOR matrix",
+    "content": "FIX Cluster 7: INV-GL-DRIFT true-up (verified: recon PASS). COGS-ZERO documented as gated WARN follow-up",
     "status": "completed"
   },
   {
-    "content": "Point #5: E2E frontend deep interaction",
-    "status": "completed"
-  },
-  {
-    "content": "Compile comprehensive SESSION_074 remediation report",
-    "status": "completed"
-  },
-  {
-    "content": "Final AUDIT-ONLY verification (manifest unchanged, gate green, services up)",
-    "status": "completed"
+    "content": "Final: consolidated forensic re-run + gate + testing_agent regression, update report",
+    "status": "in_progress"
   }
 ]

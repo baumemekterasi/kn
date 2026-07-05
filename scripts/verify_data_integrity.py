@@ -865,6 +865,91 @@ async def layer_pr_invariants(db):
         line("PASS", G, f"PR: {len(set(numbers))} nomor PR unik")
 
 
+async def layer_gl_invariants(db):
+    """Session #074 — Invarian General Ledger. Menutup META-GATE-GL: gate lama
+    BUTA terhadap keseimbangan jurnal & rekonsiliasi persediaan.
+      GL-1 (FAIL): setiap JE non-void seimbang (Σline.debit == Σline.credit == header).
+      GL-2 (FAIL): trial balance seimbang per entitas.
+      GL-3 (WARN): rekonsiliasi persediaan subledger(rolls) vs GL 1-1300 (INV-GL-DRIFT).
+      GL-4 (WARN): order berpendapatan tanpa jurnal HPP (COGS-ZERO detector).
+    """
+    from collections import defaultdict
+    print(f"\n{C}{B}L4-GL — Invarian General Ledger (keseimbangan & rekonsiliasi){X}")
+    EPS = 0.5
+    jes = await db.journal_entries.find({"status": {"$ne": "void"}}, {"_id": 0}).to_list(200000)
+
+    # GL-1: setiap JE seimbang (baris & header konsisten)
+    unbal = []
+    for je in jes:
+        d = round(sum(float(l.get("debit", 0) or 0) for l in je.get("lines", [])), 2)
+        c = round(sum(float(l.get("credit", 0) or 0) for l in je.get("lines", [])), 2)
+        td = round(float(je.get("total_debit", 0) or 0), 2)
+        tc = round(float(je.get("total_credit", 0) or 0), 2)
+        if abs(d - c) > EPS or abs(td - tc) > EPS or abs(d - td) > EPS:
+            unbal.append(je.get("number", je.get("id")))
+    if unbal:
+        results["fail"] += 1
+        line("FAIL", R, f"GL: {len(unbal)} jurnal TIDAK seimbang (Σdebit != Σkredit)", str(unbal[:5]))
+    else:
+        results["pass"] += 1
+        line("PASS", G, f"GL: {len(jes)} jurnal — setiap entri seimbang (Σdebit == Σkredit)")
+
+    # GL-2: trial balance seimbang per entitas
+    tb = defaultdict(lambda: [0.0, 0.0])
+    for je in jes:
+        eid = je.get("entity_id", "")
+        for l in je.get("lines", []):
+            tb[eid][0] += float(l.get("debit", 0) or 0)
+            tb[eid][1] += float(l.get("credit", 0) or 0)
+    tb_viol = [f"{eid}(Δ{round(v[0]-v[1],2)})" for eid, v in tb.items() if abs(v[0] - v[1]) > EPS]
+    if tb_viol:
+        results["fail"] += 1
+        line("FAIL", R, f"GL: trial balance tak seimbang per entitas: {tb_viol[:5]}")
+    else:
+        results["pass"] += 1
+        line("PASS", G, f"GL: trial balance seimbang untuk {len(tb)} buku entitas")
+
+    # GL-3 (WARN): rekonsiliasi persediaan subledger(rolls) vs GL 1-1300
+    PHYS = ["available", "reserved", "committed", "picked", "packed", "quarantine", "hold"]
+    ents = await db.business_entities.find({}, {"_id": 0, "id": 1}).to_list(100)
+    gl_inv = defaultdict(float)
+    for je in jes:
+        eid = je.get("entity_id", "")
+        for l in je.get("lines", []):
+            if l.get("account_code") == "1-1300":
+                gl_inv[eid] += float(l.get("debit", 0) or 0) - float(l.get("credit", 0) or 0)
+    drift = []
+    for e in ents:
+        eid = e["id"]
+        rolls = await db.inventory_rolls.find(
+            {"owner_entity_id": eid, "status": {"$in": PHYS}},
+            {"_id": 0, "length_remaining": 1, "unit_cost": 1, "base_unit_cost": 1}).to_list(100000)
+        sub = round(sum(float(r.get("length_remaining", 0) or 0) *
+                        float(r.get("unit_cost") or r.get("base_unit_cost") or 0) for r in rolls), 2)
+        diff = round(sub - round(gl_inv.get(eid, 0.0), 2), 2)
+        if abs(diff) > 1.0:
+            drift.append(f"{eid}(Δ{diff:,.0f})")
+    if drift:
+        results["warn"] += 1
+        line("WARN", Y, f"GL: {len(drift)} entitas drift persediaan subledger vs GL 1-1300: {drift[:5]}",
+             "→ jalankan post_inventory_opening_balance / cek posting GR·COGS·retur·LC (INV-GL-DRIFT)")
+    else:
+        results["pass"] += 1
+        line("PASS", G, "GL: rekonsiliasi persediaan (subledger rolls == GL 1-1300) per entitas")
+
+    # GL-4 (WARN): order berpendapatan tapi tanpa jurnal HPP (COGS-ZERO)
+    posted_rev = {je.get("source_id") for je in jes if je.get("source_type") == "sales_order"}
+    posted_cogs = {je.get("source_id") for je in jes if je.get("source_type") == "sales_cogs"}
+    missing_cogs = [sid for sid in posted_rev if sid and sid not in posted_cogs]
+    if missing_cogs:
+        results["warn"] += 1
+        line("WARN", Y, f"GL: {len(missing_cogs)} order punya jurnal pendapatan tanpa jurnal HPP (COGS-ZERO)",
+             "→ laba kotor bisa overstated; cek cost roll / _order_item_unit_cost")
+    else:
+        results["pass"] += 1
+        line("PASS", G, "GL: setiap order berpendapatan juga punya jurnal HPP (tidak ada COGS-ZERO)")
+
+
 async def main():
     print(f"{B}{C}{'='*64}{X}")
     print(f"{B}  KN3 — DATA INTEGRITY GATE  (DB={DB_NAME}  API={API}){X}")
@@ -874,6 +959,7 @@ async def main():
     await layer0_self_check()
     await layer1_collection_reconciliation(db)
     await layer2_db_invariants(db)
+    await layer_gl_invariants(db)
     await layer_roll_invariants(db)
     await layer_backorder_invariants(db)
     await layer_shipment_invariants(db)

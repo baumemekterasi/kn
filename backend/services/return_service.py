@@ -287,8 +287,10 @@ async def approve_and_adjust_stock(
         ret["credit_note_id"] = cn["id"]
         ret["credit_note_number"] = cn["number"]
         ret["credit_note_amount"] = cn["gross_amount"]
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        import logging
+        logging.getLogger("gl.sales_return").exception(
+            "Gagal buat Credit Note / posting GL retur %s: %s", return_id, e)
     return ret
 
 

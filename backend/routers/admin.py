@@ -19,13 +19,47 @@ try:
 except ImportError:
     XLSX_AVAILABLE = False
 
+import math
+from urllib.parse import urlparse
+
+DEFAULT_PRODUCT_IMG = ("https://images.unsplash.com/photo-1774679817333-decf0d988dd5"
+                       "?crop=entropy&cs=srgb&fm=jpg&ixlib=rb-4.1.0&q=85")
+_FORMULA_PREFIX = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value: Any) -> str:
+    """S#074 (IMP-CSV-INJECTION): cegah CSV/formula injection saat EXPORT — sel yang
+    diawali =,+,-,@,TAB,CR diberi prefiks apostrof agar tidak dieksekusi Excel/Sheets."""
+    s = "" if value is None else str(value)
+    return ("'" + s) if s[:1] in _FORMULA_PREFIX else s
+
+
+def _sanitize_rows(rows: List[Dict[str, Any]], fields: List[str]) -> List[Dict[str, Any]]:
+    return [{f: _csv_safe(r.get(f, "")) for f in fields} for r in rows]
+
+
+def _safe_image_url(raw: str) -> Optional[str]:
+    """S#074 (IMP-IMG-XSS): izinkan hanya http/https atau path relatif; tolak
+    javascript:/data:/vbscript: dll. Return None bila skema tidak aman."""
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    if s.startswith("/"):
+        return s
+    scheme = (urlparse(s).scheme or "").lower()
+    return s if scheme in ("http", "https") else None
+
+
 router = APIRouter(prefix="/api")
 
 
 def _parse_csv_or_xlsx(content: bytes, filename: str) -> Tuple[List[str], List[Dict[str, str]]]:
     """Parse CSV or XLSX, return (headers, rows)."""
     if filename.endswith(".xlsx") and XLSX_AVAILABLE:
-        wb = openpyxl.load_workbook(io.BytesIO(content))
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        except Exception:
+            raise HTTPException(status_code=400, detail="File XLSX tidak valid atau rusak.")
         ws = wb.active
         rows = list(ws.iter_rows(values_only=True))
         if not rows:
@@ -37,7 +71,11 @@ def _parse_csv_or_xlsx(content: bytes, filename: str) -> Tuple[List[str], List[D
                 data.append({headers[i]: str(row[i] or "").strip() for i in range(len(headers))})
         return headers, data
     else:
-        text = content.decode("utf-8-sig")
+        try:
+            text = content.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400,
+                                detail="File bukan UTF-8. Simpan ulang sebagai CSV berenkoding UTF-8.")
         reader = csv.DictReader(io.StringIO(text))
         headers = reader.fieldnames or []
         return list(headers), list(reader)
@@ -57,6 +95,12 @@ def _validate_and_enrich_product(row: Dict[str, str], idx: int) -> Tuple[Optiona
     except ValueError:
         errors.append("Price harus angka")
         price = 0
+    if not math.isfinite(price) or price < 0:                     # S#074 IMP-NEG/INF-PRICE
+        errors.append("Price harus angka >= 0 dan berhingga")
+    raw_img = row.get("image", "").strip()                        # S#074 IMP-IMG-XSS
+    img = _safe_image_url(raw_img)
+    if img is None:
+        errors.append("URL gambar tidak valid (hanya http/https diizinkan)")
     if errors:
         return None, f"Baris {idx + 2}: {', '.join(errors)}"
     return {
@@ -69,7 +113,7 @@ def _validate_and_enrich_product(row: Dict[str, str], idx: int) -> Tuple[Optiona
         "supplier": row.get("supplier", "Internal").strip() or "Internal",
         "base_unit": row.get("base_unit", "meter").strip() or "meter",
         "price": price,
-        "image": row.get("image", "https://images.unsplash.com/photo-1774679817333-decf0d988dd5?crop=entropy&cs=srgb&fm=jpg&ixlib=rb-4.1.0&q=85").strip(),
+        "image": img or DEFAULT_PRODUCT_IMG,
         "status": "active", "uom_conversions": [], "batch_lot_rolls": [],
     }, None
 
@@ -233,7 +277,7 @@ async def export_products(request: Request) -> Response:
     out = io.StringIO()
     writer = csv.DictWriter(out, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
-    writer.writerows(products)
+    writer.writerows(_sanitize_rows(products, fields))
     return Response(content=out.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": "attachment; filename=products.csv"})
 
@@ -246,7 +290,7 @@ async def export_customers(request: Request) -> Response:
     out = io.StringIO()
     writer = csv.DictWriter(out, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
-    writer.writerows(customers)
+    writer.writerows(_sanitize_rows(customers, fields))
     return Response(content=out.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": "attachment; filename=customers.csv"})
 
@@ -259,7 +303,7 @@ async def export_warehouses(request: Request) -> Response:
     out = io.StringIO()
     writer = csv.DictWriter(out, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
-    writer.writerows(warehouses)
+    writer.writerows(_sanitize_rows(warehouses, fields))
     return Response(content=out.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": "attachment; filename=warehouses.csv"})
 

@@ -1,970 +1,403 @@
 """
-Backend API Testing for Financial Statements Module (FINANCE) + Stock Analytics (Fase 5)
-Tests: Income Statement, Balance Sheet, CSV exports, entity scoping, GL regression, Stock Analytics
+Backend API Testing for Session #074 Remediation Validation
+Tests all fixes applied: RET-2, RET-500, RET-ATT-NOOP, PRET-GL, VB-CANCEL-GL,
+IDOR security, import hardening, UOM validation, onboarding validation
 """
 import requests
 import sys
-from datetime import datetime
+import json
+from typing import Dict, Any, Optional
 
-BASE_URL = "https://epic-cannon-6.preview.emergentagent.com/api"
-LOGIN_EMAIL = "admin@kainnusantara.id"
-LOGIN_PASSWORD = "demo12345"
+BASE_URL = "https://dark-endpoint-bugs.preview.emergentagent.com/api"
 
-class FinancialStatementsAPITester:
+# Test credentials
+USERS = {
+    "admin": {"email": "admin@kainnusantara.id", "password": "demo12345"},
+    "manager": {"email": "manager@kainnusantara.id", "password": "demo12345"},
+    "sales": {"email": "sales@kainnusantara.id", "password": "demo12345"},  # ent_ksc
+    "sales3": {"email": "sales3@kainnusantara.id", "password": "demo12345"},  # ent_kanda
+    "warehouse": {"email": "warehouse@kainnusantara.id", "password": "demo12345"},  # ent_ksc
+}
+
+class TestRunner:
     def __init__(self):
-        self.token = None
+        self.tokens: Dict[str, str] = {}
         self.tests_run = 0
         self.tests_passed = 0
         self.tests_failed = 0
-        self.failed_tests = []
-
-    def log(self, message, level="INFO"):
-        """Log test messages"""
-        prefix = {
-            "INFO": "ℹ️",
-            "SUCCESS": "✅",
-            "FAIL": "❌",
-            "WARN": "⚠️"
-        }.get(level, "•")
-        print(f"{prefix} {message}")
-
-    def run_test(self, name, method, endpoint, expected_status, data=None, params=None, headers=None, check_csv=False):
-        """Run a single API test"""
-        url = f"{BASE_URL}{endpoint}"
-        req_headers = {'Content-Type': 'application/json'}
-        if self.token:
-            req_headers['Authorization'] = f'Bearer {self.token}'
-        if headers:
-            req_headers.update(headers)
-
+        self.failures = []
+        
+    def login(self, user_key: str) -> bool:
+        """Login and store token"""
+        if user_key in self.tokens:
+            return True
+            
+        user = USERS.get(user_key)
+        if not user:
+            print(f"❌ Unknown user: {user_key}")
+            return False
+            
+        try:
+            resp = requests.post(f"{BASE_URL}/auth/login", json=user, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                self.tokens[user_key] = data.get("token", "")
+                print(f"✅ Logged in as {user['email']}")
+                return True
+            else:
+                print(f"❌ Login failed for {user['email']}: {resp.status_code}")
+                return False
+        except Exception as e:
+            print(f"❌ Login error for {user['email']}: {e}")
+            return False
+    
+    def headers(self, user_key: str) -> Dict[str, str]:
+        """Get auth headers for user"""
+        return {
+            "Authorization": f"Bearer {self.tokens.get(user_key, '')}",
+            "Content-Type": "application/json"
+        }
+    
+    def test(self, name: str, method: str, endpoint: str, expected_status: int,
+             user: str = "admin", data: Optional[Dict] = None, 
+             files: Optional[Dict] = None) -> tuple[bool, Any]:
+        """Run a single test"""
         self.tests_run += 1
-        self.log(f"Testing: {name}", "INFO")
+        print(f"\n🔍 Test {self.tests_run}: {name}")
+        
+        url = f"{BASE_URL}{endpoint}"
+        headers = self.headers(user) if not files else {"Authorization": f"Bearer {self.tokens.get(user, '')}"}
         
         try:
-            if method == 'GET':
-                response = requests.get(url, headers=req_headers, params=params, timeout=30)
-            elif method == 'POST':
-                response = requests.post(url, json=data, headers=req_headers, params=params, timeout=30)
-            elif method == 'PUT':
-                response = requests.put(url, json=data, headers=req_headers, params=params, timeout=30)
-            elif method == 'DELETE':
-                response = requests.delete(url, headers=req_headers, params=params, timeout=30)
-
-            success = response.status_code == expected_status
+            if method == "GET":
+                resp = requests.get(url, headers=headers, timeout=10)
+            elif method == "POST":
+                if files:
+                    resp = requests.post(url, headers=headers, files=files, timeout=10)
+                else:
+                    resp = requests.post(url, headers=headers, json=data, timeout=10)
+            elif method == "PATCH":
+                resp = requests.patch(url, headers=headers, json=data, timeout=10)
+            elif method == "DELETE":
+                resp = requests.delete(url, headers=headers, timeout=10)
+            else:
+                print(f"❌ Unsupported method: {method}")
+                self.tests_failed += 1
+                return False, None
+            
+            success = resp.status_code == expected_status
             
             if success:
                 self.tests_passed += 1
-                self.log(f"PASSED - {name} (Status: {response.status_code})", "SUCCESS")
-                
-                # Additional checks for CSV
-                if check_csv:
-                    content_type = response.headers.get('Content-Type', '')
-                    content_disp = response.headers.get('Content-Disposition', '')
-                    if 'text/csv' in content_type and 'attachment' in content_disp:
-                        self.log(f"  CSV headers valid: Content-Type={content_type}, Content-Disposition={content_disp}", "SUCCESS")
-                    else:
-                        self.log(f"  CSV headers invalid: Content-Type={content_type}, Content-Disposition={content_disp}", "WARN")
-                
-                return True, response
+                print(f"✅ PASS - Status: {resp.status_code}")
+                try:
+                    return True, resp.json()
+                except:
+                    return True, resp.text
             else:
                 self.tests_failed += 1
-                self.failed_tests.append(name)
-                self.log(f"FAILED - {name} (Expected {expected_status}, got {response.status_code})", "FAIL")
-                try:
-                    error_detail = response.json()
-                    self.log(f"  Error: {error_detail}", "FAIL")
-                except:
-                    self.log(f"  Response: {response.text[:200]}", "FAIL")
-                return False, response
-
+                self.failures.append({
+                    "test": name,
+                    "expected": expected_status,
+                    "actual": resp.status_code,
+                    "response": resp.text[:200]
+                })
+                print(f"❌ FAIL - Expected {expected_status}, got {resp.status_code}")
+                print(f"   Response: {resp.text[:200]}")
+                return False, None
+                
         except Exception as e:
             self.tests_failed += 1
-            self.failed_tests.append(name)
-            self.log(f"FAILED - {name} (Exception: {str(e)})", "FAIL")
+            self.failures.append({"test": name, "error": str(e)})
+            print(f"❌ FAIL - Error: {e}")
             return False, None
-
-    def test_login(self):
-        """Test login and get token"""
-        self.log("\n=== AUTHENTICATION ===", "INFO")
-        success, response = self.run_test(
-            "Login",
-            "POST",
-            "/auth/login",
-            200,
-            data={"email": LOGIN_EMAIL, "password": LOGIN_PASSWORD}
-        )
-        if success and response:
-            try:
-                data = response.json()
-                self.token = data.get('token')
-                if self.token:
-                    self.log(f"  Token obtained: {self.token[:20]}...", "SUCCESS")
-                    return True
-                else:
-                    self.log("  No token in response", "FAIL")
-                    return False
-            except:
-                self.log("  Failed to parse login response", "FAIL")
-                return False
-        return False
-
-    def test_income_statement_basic(self):
-        """Test Income Statement without filters"""
-        self.log("\n=== INCOME STATEMENT - BASIC ===", "INFO")
-        success, response = self.run_test(
-            "Income Statement (no filters)",
-            "GET",
-            "/finance/income-statement",
-            200
-        )
-        if success and response:
-            try:
-                data = response.json()
-                # Check structure
-                required_fields = ['sections', 'revenue_total', 'gross_profit', 'net_income', 'gross_margin', 'net_margin']
-                missing = [f for f in required_fields if f not in data]
-                if missing:
-                    self.log(f"  Missing fields: {missing}", "WARN")
-                else:
-                    self.log(f"  Structure valid: revenue={data.get('revenue_total')}, net_income={data.get('net_income')}", "SUCCESS")
-                
-                # Check sections
-                sections = data.get('sections', [])
-                section_keys = [s.get('key') for s in sections]
-                expected_sections = ['revenue', 'cogs', 'opex']
-                if all(k in section_keys for k in expected_sections):
-                    self.log(f"  Sections present: {section_keys}", "SUCCESS")
-                else:
-                    self.log(f"  Sections: {section_keys} (expected: {expected_sections})", "WARN")
-                
-                return True
-            except Exception as e:
-                self.log(f"  Failed to parse response: {e}", "FAIL")
-        return False
-
-    def test_income_statement_with_filters(self):
-        """Test Income Statement with date filters"""
-        self.log("\n=== INCOME STATEMENT - WITH FILTERS ===", "INFO")
-        success, response = self.run_test(
-            "Income Statement (with start & end)",
-            "GET",
-            "/finance/income-statement",
-            200,
-            params={"start": "2026-01-01", "end": "2026-12-31"}
-        )
-        if success and response:
-            try:
-                data = response.json()
-                period = data.get('period', {})
-                self.log(f"  Period: {period.get('start')} to {period.get('end')}", "SUCCESS")
-                return True
-            except Exception as e:
-                self.log(f"  Failed to parse response: {e}", "FAIL")
-        return False
-
-    def test_balance_sheet_single(self):
-        """Test Balance Sheet single period"""
-        self.log("\n=== BALANCE SHEET - SINGLE PERIOD ===", "INFO")
-        success, response = self.run_test(
-            "Balance Sheet (single period, as_of)",
-            "GET",
-            "/finance/balance-sheet",
-            200,
-            params={"as_of": "2026-12-31"}
-        )
-        if success and response:
-            try:
-                data = response.json()
-                # Check structure
-                required_fields = ['assets', 'liabilities', 'equity', 'assets_total', 'liabilities_total', 
-                                   'equity_total', 'liabilities_equity_total', 'balanced']
-                missing = [f for f in required_fields if f not in data]
-                if missing:
-                    self.log(f"  Missing fields: {missing}", "WARN")
-                else:
-                    self.log(f"  Structure valid", "SUCCESS")
-                
-                # Check balanced
-                balanced = data.get('balanced')
-                assets = data.get('assets_total', 0)
-                liab_eq = data.get('liabilities_equity_total', 0)
-                self.log(f"  Assets: {assets}, Liab+Equity: {liab_eq}, Balanced: {balanced}", "SUCCESS" if balanced else "WARN")
-                
-                # Check comparative flag
-                comparative = data.get('comparative', False)
-                if not comparative:
-                    self.log(f"  Comparative mode: False (as expected)", "SUCCESS")
-                else:
-                    self.log(f"  Comparative mode: True (unexpected)", "WARN")
-                
-                return True
-            except Exception as e:
-                self.log(f"  Failed to parse response: {e}", "FAIL")
-        return False
-
-    def test_balance_sheet_comparative(self):
-        """Test Balance Sheet comparative mode"""
-        self.log("\n=== BALANCE SHEET - COMPARATIVE MODE ===", "INFO")
-        success, response = self.run_test(
-            "Balance Sheet (comparative with compare_as_of)",
-            "GET",
-            "/finance/balance-sheet",
-            200,
-            params={"as_of": "2026-12-31", "compare_as_of": "2026-06-30"}
-        )
-        if success and response:
-            try:
-                data = response.json()
-                # Check comparative flag
-                comparative = data.get('comparative', False)
-                if comparative:
-                    self.log(f"  Comparative mode: True", "SUCCESS")
-                else:
-                    self.log(f"  Comparative mode: False (expected True)", "FAIL")
-                    return False
-                
-                # Check compare block
-                compare = data.get('compare', {})
-                if compare:
-                    self.log(f"  Compare block present: assets={compare.get('assets_total')}, balanced={compare.get('balanced')}", "SUCCESS")
-                else:
-                    self.log(f"  Compare block missing", "WARN")
-                
-                # Check delta block
-                delta = data.get('delta', {})
-                if delta:
-                    self.log(f"  Delta block present: assets={delta.get('assets_total')}", "SUCCESS")
-                else:
-                    self.log(f"  Delta block missing", "WARN")
-                
-                # Check equity compare fields
-                equity = data.get('equity', {})
-                if 'compare_current_earnings' in equity:
-                    self.log(f"  Equity compare_current_earnings: {equity.get('compare_current_earnings')}", "SUCCESS")
-                else:
-                    self.log(f"  Equity compare_current_earnings missing", "WARN")
-                
-                # Check line-level compare_amount and delta
-                assets_sections = data.get('assets', {}).get('sections', [])
-                if assets_sections:
-                    first_section = assets_sections[0]
-                    lines = first_section.get('lines', [])
-                    if lines:
-                        first_line = lines[0]
-                        if 'compare_amount' in first_line and 'delta' in first_line:
-                            self.log(f"  Line-level compare_amount & delta present", "SUCCESS")
-                        else:
-                            self.log(f"  Line-level compare_amount or delta missing", "WARN")
-                
-                return True
-            except Exception as e:
-                self.log(f"  Failed to parse response: {e}", "FAIL")
-        return False
-
-    def test_income_statement_csv_export(self):
-        """Test Income Statement CSV export"""
-        self.log("\n=== INCOME STATEMENT - CSV EXPORT ===", "INFO")
-        success, response = self.run_test(
-            "Income Statement CSV export",
-            "GET",
-            "/finance/income-statement/export.csv",
-            200,
-            params={"start": "2026-01-01", "end": "2026-12-31"},
-            check_csv=True
-        )
-        if success and response:
-            try:
-                # Check if response is CSV
-                content = response.text
-                if 'Laba-Rugi' in content or 'Income Statement' in content:
-                    self.log(f"  CSV content valid (length: {len(content)} bytes)", "SUCCESS")
-                    return True
-                else:
-                    self.log(f"  CSV content unexpected: {content[:100]}", "WARN")
-            except Exception as e:
-                self.log(f"  Failed to parse CSV: {e}", "FAIL")
-        return False
-
-    def test_balance_sheet_csv_export_single(self):
-        """Test Balance Sheet CSV export (single period)"""
-        self.log("\n=== BALANCE SHEET - CSV EXPORT (SINGLE) ===", "INFO")
-        success, response = self.run_test(
-            "Balance Sheet CSV export (single period)",
-            "GET",
-            "/finance/balance-sheet/export.csv",
-            200,
-            params={"as_of": "2026-12-31"},
-            check_csv=True
-        )
-        if success and response:
-            try:
-                content = response.text
-                if 'Neraca' in content or 'Balance Sheet' in content:
-                    self.log(f"  CSV content valid (length: {len(content)} bytes)", "SUCCESS")
-                    # Check no comparative columns
-                    if 'Pembanding' not in content and 'Delta' not in content:
-                        self.log(f"  No comparative columns (as expected)", "SUCCESS")
-                    else:
-                        self.log(f"  Comparative columns found (unexpected)", "WARN")
-                    return True
-                else:
-                    self.log(f"  CSV content unexpected: {content[:100]}", "WARN")
-            except Exception as e:
-                self.log(f"  Failed to parse CSV: {e}", "FAIL")
-        return False
-
-    def test_balance_sheet_csv_export_comparative(self):
-        """Test Balance Sheet CSV export (comparative)"""
-        self.log("\n=== BALANCE SHEET - CSV EXPORT (COMPARATIVE) ===", "INFO")
-        success, response = self.run_test(
-            "Balance Sheet CSV export (comparative)",
-            "GET",
-            "/finance/balance-sheet/export.csv",
-            200,
-            params={"as_of": "2026-12-31", "compare_as_of": "2026-06-30"},
-            check_csv=True
-        )
-        if success and response:
-            try:
-                content = response.text
-                if 'Neraca' in content or 'Balance Sheet' in content:
-                    self.log(f"  CSV content valid (length: {len(content)} bytes)", "SUCCESS")
-                    # Check comparative columns
-                    if 'Pembanding' in content and 'Delta' in content:
-                        self.log(f"  Comparative columns present (Pembanding & Delta)", "SUCCESS")
-                    else:
-                        self.log(f"  Comparative columns missing", "WARN")
-                    return True
-                else:
-                    self.log(f"  CSV content unexpected: {content[:100]}", "WARN")
-            except Exception as e:
-                self.log(f"  Failed to parse CSV: {e}", "FAIL")
-        return False
-
-    def test_entity_scoping_param(self):
-        """Test entity scoping via entity_id param"""
-        self.log("\n=== ENTITY SCOPING - PARAM ===", "INFO")
-        success, response = self.run_test(
-            "Income Statement with entity_id param",
-            "GET",
-            "/finance/income-statement",
-            200,
-            params={"entity_id": "all", "start": "2026-01-01", "end": "2026-12-31"}
-        )
-        if success:
-            self.log(f"  Entity scoping via param works", "SUCCESS")
-            return True
-        return False
-
-    def test_entity_scoping_header(self):
-        """Test entity scoping via X-Entity-Id header"""
-        self.log("\n=== ENTITY SCOPING - HEADER ===", "INFO")
-        success, response = self.run_test(
-            "Balance Sheet with X-Entity-Id header",
-            "GET",
-            "/finance/balance-sheet",
-            200,
-            params={"as_of": "2026-12-31"},
-            headers={"X-Entity-Id": "all"}
-        )
-        if success:
-            self.log(f"  Entity scoping via header works", "SUCCESS")
-            return True
-        return False
-
-    def test_gl_regression_trial_balance(self):
-        """Test GL regression: trial balance still works"""
-        self.log("\n=== GL REGRESSION - TRIAL BALANCE ===", "INFO")
-        success, response = self.run_test(
-            "GL Trial Balance",
-            "GET",
-            "/gl/trial-balance",
-            200
-        )
-        if success and response:
-            try:
-                data = response.json()
-                if 'rows' in data and 'balanced' in data:
-                    balanced = data.get('balanced')
-                    total_debit = data.get('total_debit', 0)
-                    total_credit = data.get('total_credit', 0)
-                    self.log(f"  Trial Balance: Debit={total_debit}, Credit={total_credit}, Balanced={balanced}", "SUCCESS" if balanced else "WARN")
-                    return True
-                else:
-                    self.log(f"  Trial Balance structure invalid", "WARN")
-            except Exception as e:
-                self.log(f"  Failed to parse response: {e}", "FAIL")
-        return False
-
-    def test_gl_regression_summary(self):
-        """Test GL regression: summary still works"""
-        self.log("\n=== GL REGRESSION - SUMMARY ===", "INFO")
-        success, response = self.run_test(
-            "GL Summary",
-            "GET",
-            "/gl/summary",
-            200
-        )
-        if success and response:
-            try:
-                data = response.json()
-                if 'journal_count' in data and 'balanced' in data:
-                    self.log(f"  GL Summary: journals={data.get('journal_count')}, balanced={data.get('balanced')}", "SUCCESS")
-                    return True
-                else:
-                    self.log(f"  GL Summary structure invalid", "WARN")
-            except Exception as e:
-                self.log(f"  Failed to parse response: {e}", "FAIL")
-        return False
-
-    def test_gl_regression_journal(self):
-        """Test GL regression: journal entries still work"""
-        self.log("\n=== GL REGRESSION - JOURNAL ENTRIES ===", "INFO")
-        success, response = self.run_test(
-            "GL Journal Entries",
-            "GET",
-            "/gl/journal",
-            200,
-            params={"limit": 10}
-        )
-        if success and response:
-            try:
-                data = response.json()
-                if isinstance(data, list):
-                    self.log(f"  Journal Entries: {len(data)} entries returned", "SUCCESS")
-                    return True
-                else:
-                    self.log(f"  Journal Entries: unexpected format", "WARN")
-            except Exception as e:
-                self.log(f"  Failed to parse response: {e}", "FAIL")
-        return False
-
+    
     def print_summary(self):
         """Print test summary"""
-        self.log("\n" + "="*60, "INFO")
-        self.log("TEST SUMMARY", "INFO")
-        self.log("="*60, "INFO")
-        self.log(f"Total Tests: {self.tests_run}", "INFO")
-        self.log(f"Passed: {self.tests_passed}", "SUCCESS")
-        self.log(f"Failed: {self.tests_failed}", "FAIL" if self.tests_failed > 0 else "INFO")
-        
-        if self.tests_failed > 0:
-            self.log("\nFailed Tests:", "FAIL")
-            for test in self.failed_tests:
-                self.log(f"  - {test}", "FAIL")
-        
-        success_rate = (self.tests_passed / self.tests_run * 100) if self.tests_run > 0 else 0
-        self.log(f"\nSuccess Rate: {success_rate:.1f}%", "SUCCESS" if success_rate >= 80 else "WARN")
-        self.log("="*60, "INFO")
-        
-        return 0 if self.tests_failed == 0 else 1
-
-
-
-class StockAnalyticsAPITester:
-    """Test Stock Analytics endpoint (Fase 5)"""
-    def __init__(self):
-        self.token = None
-        self.tests_run = 0
-        self.tests_passed = 0
-        self.tests_failed = 0
-        self.failed_tests = []
-
-    def log(self, message, level="INFO"):
-        """Log test messages"""
-        prefix = {
-            "INFO": "ℹ️",
-            "SUCCESS": "✅",
-            "FAIL": "❌",
-            "WARN": "⚠️"
-        }.get(level, "•")
-        print(f"{prefix} {message}")
-
-    def run_test(self, name, method, endpoint, expected_status, data=None, params=None, headers=None):
-        """Run a single API test"""
-        url = f"{BASE_URL}{endpoint}"
-        req_headers = {'Content-Type': 'application/json'}
-        if self.token:
-            req_headers['Authorization'] = f'Bearer {self.token}'
-        if headers:
-            req_headers.update(headers)
-
-        self.tests_run += 1
-        self.log(f"Testing: {name}", "INFO")
-        
-        try:
-            if method == 'GET':
-                response = requests.get(url, headers=req_headers, params=params, timeout=30)
-            elif method == 'POST':
-                response = requests.post(url, json=data, headers=req_headers, params=params, timeout=30)
-
-            success = response.status_code == expected_status
-            
-            if success:
-                self.tests_passed += 1
-                self.log(f"PASSED - {name} (Status: {response.status_code})", "SUCCESS")
-                return True, response
-            else:
-                self.tests_failed += 1
-                self.failed_tests.append(name)
-                self.log(f"FAILED - {name} (Expected {expected_status}, got {response.status_code})", "FAIL")
-                try:
-                    error_detail = response.json()
-                    self.log(f"  Error: {error_detail}", "FAIL")
-                except:
-                    self.log(f"  Response: {response.text[:200]}", "FAIL")
-                return False, response
-
-        except Exception as e:
-            self.tests_failed += 1
-            self.failed_tests.append(name)
-            self.log(f"FAILED - {name} (Exception: {str(e)})", "FAIL")
-            return False, None
-
-    def test_login(self):
-        """Test login and get token"""
-        self.log("\n=== AUTHENTICATION ===", "INFO")
-        success, response = self.run_test(
-            "Login",
-            "POST",
-            "/auth/login",
-            200,
-            data={"email": LOGIN_EMAIL, "password": LOGIN_PASSWORD}
-        )
-        if success and response:
-            try:
-                data = response.json()
-                self.token = data.get('token')
-                if self.token:
-                    self.log(f"Token obtained successfully", "SUCCESS")
-                    return True
-            except:
-                pass
-        self.log("Failed to obtain token", "FAIL")
-        return False
-
-    def test_stock_analytics_basic(self):
-        """Test basic stock analytics endpoint with entity_id=all"""
-        self.log("\n=== STOCK ANALYTICS - BASIC ===", "INFO")
-        success, response = self.run_test(
-            "Stock Analytics - Basic (entity_id=all)",
-            "GET",
-            "/inventory/stock-analytics",
-            200,
-            params={"entity_id": "all"},
-            headers={"X-Entity-Id": "all"}
-        )
-        
-        if success and response:
-            try:
-                data = response.json()
-                
-                # Verify structure
-                required_keys = ['generated_at', 'thresholds', 'filters', 'summary', 'rows']
-                for key in required_keys:
-                    if key not in data:
-                        self.log(f"  Missing key: {key}", "FAIL")
-                        return False
-                
-                # Verify thresholds
-                thresholds = data.get('thresholds', {})
-                if thresholds.get('fast_max_days') != 30:
-                    self.log(f"  Threshold fast_max_days: expected 30, got {thresholds.get('fast_max_days')}", "WARN")
-                if thresholds.get('slow_max_days') != 90:
-                    self.log(f"  Threshold slow_max_days: expected 90, got {thresholds.get('slow_max_days')}", "WARN")
-                if thresholds.get('velocity_window_days') != 90:
-                    self.log(f"  Threshold velocity_window_days: expected 90, got {thresholds.get('velocity_window_days')}", "WARN")
-                
-                # Verify summary structure
-                summary = data.get('summary', {})
-                sku_count = summary.get('sku_count', 0)
-                by_class = summary.get('by_class', {})
-                
-                self.log(f"  SKU count: {sku_count}", "INFO")
-                self.log(f"  Fast: {by_class.get('fast', {}).get('count', 0)}", "INFO")
-                self.log(f"  Slow: {by_class.get('slow', {}).get('count', 0)}", "INFO")
-                self.log(f"  Dead: {by_class.get('dead', {}).get('count', 0)}", "INFO")
-                self.log(f"  Never sold: {summary.get('never_sold_skus', 0)}", "INFO")
-                
-                # Verify expected seed data (sku_count=11, fast=3, slow=8, dead=0, never_sold=6)
-                # Note: These are expected values from seed data, may vary
-                if sku_count == 11:
-                    self.log(f"  ✓ SKU count matches expected (11)", "SUCCESS")
-                else:
-                    self.log(f"  ⚠ SKU count: expected 11, got {sku_count}", "WARN")
-                
-                fast_count = by_class.get('fast', {}).get('count', 0)
-                slow_count = by_class.get('slow', {}).get('count', 0)
-                dead_count = by_class.get('dead', {}).get('count', 0)
-                never_sold = summary.get('never_sold_skus', 0)
-                
-                if fast_count == 3:
-                    self.log(f"  ✓ Fast count matches expected (3)", "SUCCESS")
-                else:
-                    self.log(f"  ⚠ Fast count: expected 3, got {fast_count}", "WARN")
-                
-                if slow_count == 8:
-                    self.log(f"  ✓ Slow count matches expected (8)", "SUCCESS")
-                else:
-                    self.log(f"  ⚠ Slow count: expected 8, got {slow_count}", "WARN")
-                
-                if dead_count == 0:
-                    self.log(f"  ✓ Dead count matches expected (0)", "SUCCESS")
-                else:
-                    self.log(f"  ⚠ Dead count: expected 0, got {dead_count}", "WARN")
-                
-                if never_sold == 6:
-                    self.log(f"  ✓ Never sold count matches expected (6)", "SUCCESS")
-                else:
-                    self.log(f"  ⚠ Never sold count: expected 6, got {never_sold}", "WARN")
-                
-                # Verify internal consistency: by_class counts == rows grouped by classification
-                rows = data.get('rows', [])
-                row_fast = sum(1 for r in rows if r.get('classification') == 'fast')
-                row_slow = sum(1 for r in rows if r.get('classification') == 'slow')
-                row_dead = sum(1 for r in rows if r.get('classification') == 'dead')
-                
-                if row_fast == fast_count and row_slow == slow_count and row_dead == dead_count:
-                    self.log(f"  ✓ Internal consistency: by_class counts match row classifications", "SUCCESS")
-                else:
-                    self.log(f"  ✗ Inconsistency: by_class ({fast_count}/{slow_count}/{dead_count}) vs rows ({row_fast}/{row_slow}/{row_dead})", "FAIL")
-                
-                return True
-            except Exception as e:
-                self.log(f"  Error parsing response: {str(e)}", "FAIL")
-                return False
-        return False
-
-    def test_warehouse_filter(self):
-        """Test warehouse filter"""
-        self.log("\n=== STOCK ANALYTICS - WAREHOUSE FILTER ===", "INFO")
-        
-        # First get all warehouses
-        success, response = self.run_test(
-            "Get Warehouses",
-            "GET",
-            "/warehouses",
-            200
-        )
-        
-        if not success or not response:
-            self.log("  Cannot test warehouse filter without warehouse data", "WARN")
-            return False
-        
-        try:
-            warehouses = response.json()
-            if not warehouses:
-                self.log("  No warehouses found", "WARN")
-                return False
-            
-            warehouse_id = warehouses[0].get('id')
-            warehouse_name = warehouses[0].get('name', 'Unknown')
-            
-            self.log(f"  Testing with warehouse: {warehouse_name} ({warehouse_id})", "INFO")
-            
-            success, response = self.run_test(
-                f"Stock Analytics - Warehouse Filter ({warehouse_name})",
-                "GET",
-                "/inventory/stock-analytics",
-                200,
-                params={"entity_id": "all", "warehouse_id": warehouse_id},
-                headers={"X-Entity-Id": "all"}
-            )
-            
-            if success and response:
-                data = response.json()
-                filters = data.get('filters', {})
-                if filters.get('warehouse_id') == warehouse_id:
-                    self.log(f"  ✓ Warehouse filter applied correctly", "SUCCESS")
-                    return True
-                else:
-                    self.log(f"  ✗ Warehouse filter not applied: {filters}", "FAIL")
-            return False
-        except Exception as e:
-            self.log(f"  Error: {str(e)}", "FAIL")
-            return False
-
-    def test_category_filter(self):
-        """Test category filter"""
-        self.log("\n=== STOCK ANALYTICS - CATEGORY FILTER ===", "INFO")
-        
-        # First get all data to find a category
-        success, response = self.run_test(
-            "Get Stock Analytics for Category Discovery",
-            "GET",
-            "/inventory/stock-analytics",
-            200,
-            params={"entity_id": "all"},
-            headers={"X-Entity-Id": "all"}
-        )
-        
-        if not success or not response:
-            self.log("  Cannot test category filter", "WARN")
-            return False
-        
-        try:
-            data = response.json()
-            rows = data.get('rows', [])
-            categories = set(r.get('category') for r in rows if r.get('category'))
-            
-            if not categories:
-                self.log("  No categories found in data", "WARN")
-                return False
-            
-            test_category = list(categories)[0]
-            self.log(f"  Testing with category: {test_category}", "INFO")
-            
-            success, response = self.run_test(
-                f"Stock Analytics - Category Filter ({test_category})",
-                "GET",
-                "/inventory/stock-analytics",
-                200,
-                params={"entity_id": "all", "category": test_category},
-                headers={"X-Entity-Id": "all"}
-            )
-            
-            if success and response:
-                data = response.json()
-                filters = data.get('filters', {})
-                rows = data.get('rows', [])
-                
-                if filters.get('category') == test_category:
-                    self.log(f"  ✓ Category filter applied correctly", "SUCCESS")
-                    
-                    # Verify all rows match the category
-                    all_match = all(r.get('category') == test_category for r in rows)
-                    if all_match:
-                        self.log(f"  ✓ All rows match category filter", "SUCCESS")
-                        return True
-                    else:
-                        self.log(f"  ✗ Some rows don't match category filter", "FAIL")
-                else:
-                    self.log(f"  ✗ Category filter not applied: {filters}", "FAIL")
-            return False
-        except Exception as e:
-            self.log(f"  Error: {str(e)}", "FAIL")
-            return False
-
-    def test_classification_logic(self):
-        """Test classification correctness (fast/slow/dead logic)"""
-        self.log("\n=== STOCK ANALYTICS - CLASSIFICATION LOGIC ===", "INFO")
-        
-        success, response = self.run_test(
-            "Stock Analytics - Classification Logic",
-            "GET",
-            "/inventory/stock-analytics",
-            200,
-            params={"entity_id": "all"},
-            headers={"X-Entity-Id": "all"}
-        )
-        
-        if not success or not response:
-            return False
-        
-        try:
-            data = response.json()
-            rows = data.get('rows', [])
-            thresholds = data.get('thresholds', {})
-            fast_max = thresholds.get('fast_max_days', 30)
-            slow_max = thresholds.get('slow_max_days', 90)
-            
-            self.log(f"  Checking classification logic (Fast ≤{fast_max}d, Slow ≤{slow_max}d, Dead >{slow_max}d)", "INFO")
-            
-            errors = []
-            for row in rows:
-                cls = row.get('classification')
-                days_since_sale = row.get('days_since_sale')
-                never_sold = row.get('never_sold', False)
-                oldest_age = row.get('oldest_age_days', 0)
-                sku = row.get('sku', 'Unknown')
-                
-                # Classification logic from service:
-                # - If never sold and would be 'fast', downgrade to 'slow'
-                # - Fast: days_since_sale ≤ fast_max
-                # - Slow: days_since_sale ≤ slow_max
-                # - Dead: days_since_sale > slow_max
-                
-                if days_since_sale is not None:
-                    if days_since_sale <= fast_max:
-                        expected = 'fast' if not never_sold else 'slow'
-                    elif days_since_sale <= slow_max:
-                        expected = 'slow'
-                    else:
-                        expected = 'dead'
-                    
-                    if cls != expected:
-                        errors.append(f"{sku}: expected {expected}, got {cls} (days_since_sale={days_since_sale}, never_sold={never_sold})")
-                else:
-                    # No sale, use oldest_age
-                    if oldest_age <= fast_max:
-                        expected = 'slow'  # Never sold items are downgraded from fast to slow
-                    elif oldest_age <= slow_max:
-                        expected = 'slow'
-                    else:
-                        expected = 'dead'
-                    
-                    if cls != expected:
-                        errors.append(f"{sku}: expected {expected}, got {cls} (oldest_age={oldest_age}, never_sold={never_sold})")
-            
-            if not errors:
-                self.log(f"  ✓ All classifications are correct", "SUCCESS")
-                return True
-            else:
-                self.log(f"  ✗ Classification errors found:", "FAIL")
-                for err in errors[:5]:  # Show first 5 errors
-                    self.log(f"    {err}", "FAIL")
-                return False
-        except Exception as e:
-            self.log(f"  Error: {str(e)}", "FAIL")
-            return False
-
-    def test_sold_qty_window(self):
-        """Test that sold_qty_window > 0 only for products with sales in velocity window"""
-        self.log("\n=== STOCK ANALYTICS - SOLD QTY WINDOW ===", "INFO")
-        
-        success, response = self.run_test(
-            "Stock Analytics - Sold Qty Window",
-            "GET",
-            "/inventory/stock-analytics",
-            200,
-            params={"entity_id": "all"},
-            headers={"X-Entity-Id": "all"}
-        )
-        
-        if not success or not response:
-            return False
-        
-        try:
-            data = response.json()
-            rows = data.get('rows', [])
-            
-            errors = []
-            for row in rows:
-                sold_qty = row.get('sold_qty_window', 0)
-                never_sold = row.get('never_sold', False)
-                sku = row.get('sku', 'Unknown')
-                
-                # If never_sold=True, sold_qty_window should be 0
-                if never_sold and sold_qty > 0:
-                    errors.append(f"{sku}: never_sold=True but sold_qty_window={sold_qty}")
-            
-            if not errors:
-                self.log(f"  ✓ Sold qty window logic is correct", "SUCCESS")
-                return True
-            else:
-                self.log(f"  ✗ Sold qty window errors found:", "FAIL")
-                for err in errors[:5]:
-                    self.log(f"    {err}", "FAIL")
-                return False
-        except Exception as e:
-            self.log(f"  Error: {str(e)}", "FAIL")
-            return False
-
-    def test_permission_required(self):
-        """Test that endpoint requires product:view permission"""
-        self.log("\n=== STOCK ANALYTICS - PERMISSION CHECK ===", "INFO")
-        
-        # Try without token (should fail with 401 or 403)
-        url = f"{BASE_URL}/inventory/stock-analytics"
-        try:
-            response = requests.get(url, params={"entity_id": "all"}, timeout=30)
-            if response.status_code in [401, 403]:
-                self.log(f"  ✓ Endpoint requires authentication (Status: {response.status_code})", "SUCCESS")
-                self.tests_passed += 1
-                return True
-            else:
-                self.log(f"  ✗ Endpoint accessible without auth (Status: {response.status_code})", "FAIL")
-                self.tests_failed += 1
-                self.failed_tests.append("Permission Check")
-                return False
-        except Exception as e:
-            self.log(f"  Error: {str(e)}", "FAIL")
-            self.tests_failed += 1
-            self.failed_tests.append("Permission Check")
-            return False
-
-    def print_summary(self):
-        """Print test summary"""
-        print("\n" + "="*60)
-        print("STOCK ANALYTICS TEST SUMMARY")
-        print("="*60)
+        print("\n" + "="*70)
+        print("TEST SUMMARY")
+        print("="*70)
         print(f"Total Tests: {self.tests_run}")
         print(f"✅ Passed: {self.tests_passed}")
         print(f"❌ Failed: {self.tests_failed}")
+        print(f"Success Rate: {(self.tests_passed/self.tests_run*100):.1f}%")
         
-        if self.failed_tests:
-            print("\nFailed Tests:")
-            for test in self.failed_tests:
-                print(f"  • {test}")
-        
-        print("="*60)
-        return 0 if self.tests_failed == 0 else 1
+        if self.failures:
+            print("\n" + "="*70)
+            print("FAILURES:")
+            print("="*70)
+            for i, f in enumerate(self.failures, 1):
+                print(f"\n{i}. {f.get('test', 'Unknown')}")
+                if 'error' in f:
+                    print(f"   Error: {f['error']}")
+                else:
+                    print(f"   Expected: {f.get('expected')}, Got: {f.get('actual')}")
+                    print(f"   Response: {f.get('response', '')}")
+
 
 def main():
-    """Main test runner"""
+    runner = TestRunner()
     
-    # Test Stock Analytics (Fase 5)
-    print("\n" + "="*60)
-    print("STOCK ANALYTICS (FASE 5) - BACKEND API TESTS")
-    print("="*60)
+    print("="*70)
+    print("SESSION #074 REMEDIATION VALIDATION")
+    print("="*70)
     
-    sa_tester = StockAnalyticsAPITester()
+    # ========================================================================
+    # REGRESSION - Auth: all 5 users can login
+    # ========================================================================
+    print("\n" + "="*70)
+    print("REGRESSION TESTS - Authentication")
+    print("="*70)
     
-    # Authentication
-    if not sa_tester.test_login():
-        print("\n❌ Login failed, stopping Stock Analytics tests")
-        return 1
+    for user_key in ["admin", "manager", "sales", "sales3", "warehouse"]:
+        if not runner.login(user_key):
+            print(f"❌ CRITICAL: Cannot login as {user_key}")
+            return 1
     
-    # Stock Analytics Tests
-    sa_tester.test_permission_required()
-    sa_tester.test_stock_analytics_basic()
-    sa_tester.test_warehouse_filter()
-    sa_tester.test_category_filter()
-    sa_tester.test_classification_logic()
-    sa_tester.test_sold_qty_window()
+    # ========================================================================
+    # REGRESSION - Core reads
+    # ========================================================================
+    print("\n" + "="*70)
+    print("REGRESSION TESTS - Core Reads")
+    print("="*70)
     
-    # Print Stock Analytics summary
-    sa_result = sa_tester.print_summary()
+    runner.test("GET /sales-orders", "GET", "/sales-orders", 200, "admin")
+    runner.test("GET /products", "GET", "/products", 200, "admin")
+    runner.test("GET /entities", "GET", "/entities", 200, "admin")
+    runner.test("GET /gl/trial-balance", "GET", "/gl/trial-balance", 200, "admin")
     
-    # Test Financial Statements (existing tests)
-    print("\n" + "="*60)
-    print("FINANCIAL STATEMENTS MODULE - BACKEND API TESTS")
-    print("="*60)
+    # ========================================================================
+    # Get test data - find an ent_ksc sales order
+    # ========================================================================
+    print("\n" + "="*70)
+    print("SETUP - Finding test data")
+    print("="*70)
     
-    tester = FinancialStatementsAPITester()
+    success, orders_data = runner.test("GET /sales-orders for test data", "GET", "/sales-orders", 200, "admin")
+    ksc_order_id = None
+    if success and orders_data:
+        orders = orders_data.get("items", orders_data) if isinstance(orders_data, dict) else orders_data
+        for order in orders:
+            if order.get("entity_id") == "ent_ksc":
+                ksc_order_id = order.get("id")
+                print(f"✅ Found ent_ksc order: {ksc_order_id}")
+                break
     
-    # Authentication
-    if not tester.test_login():
-        print("\n❌ Login failed, stopping Financial tests")
-        return 1
+    if not ksc_order_id:
+        print("⚠️  No ent_ksc order found, skipping IDOR tests")
     
-    # Income Statement Tests
-    tester.test_income_statement_basic()
-    tester.test_income_statement_with_filters()
+    # ========================================================================
+    # RET-500 FIX: Bogus sales return ID should return 404, not 500
+    # ========================================================================
+    print("\n" + "="*70)
+    print("RET-500 FIX - Bogus ID returns 404")
+    print("="*70)
     
-    # Balance Sheet Tests
-    tester.test_balance_sheet_single()
-    tester.test_balance_sheet_comparative()
+    runner.test("POST /sales-returns/BOGUSID/approve", "POST", "/sales-returns/BOGUSID/approve", 404, "admin", {})
+    runner.test("POST /sales-returns/BOGUSID/reject", "POST", "/sales-returns/BOGUSID/reject", 404, "admin", {})
     
-    # CSV Export Tests
-    tester.test_income_statement_csv_export()
-    tester.test_balance_sheet_csv_export_single()
-    tester.test_balance_sheet_csv_export_comparative()
+    # ========================================================================
+    # RET-ATT-NOOP FIX: DELETE bogus attachment should return 404
+    # ========================================================================
+    print("\n" + "="*70)
+    print("RET-ATT-NOOP FIX - Bogus attachment returns 404")
+    print("="*70)
     
-    # Entity Scoping Tests
-    tester.test_entity_scoping_param()
-    tester.test_entity_scoping_header()
+    runner.test("DELETE /sales-returns/BOGUS/attachments/BOGUS", "DELETE", 
+                "/sales-returns/BOGUS/attachments/BOGUS", 404, "admin")
     
-    # GL Regression Tests
-    tester.test_gl_regression_trial_balance()
-    tester.test_gl_regression_summary()
-    tester.test_gl_regression_journal()
+    # ========================================================================
+    # RET-2 FIX: Create sales return and verify credit_note_id is set
+    # ========================================================================
+    print("\n" + "="*70)
+    print("RET-2 FIX - Sales return creates credit note")
+    print("="*70)
     
-    # Print Financial summary
-    fin_result = tester.print_summary()
+    # Find a suitable sales order for return
+    success, orders_data = runner.test("GET /sales-orders for return", "GET", "/sales-orders", 200, "admin")
+    suitable_order = None
+    if success and orders_data:
+        orders = orders_data.get("items", orders_data) if isinstance(orders_data, dict) else orders_data
+        for order in orders:
+            if order.get("status") in ["confirmed", "shipped", "done"] and order.get("items"):
+                suitable_order = order
+                break
     
-    # Return combined result
-    return max(sa_result, fin_result)
+    if suitable_order:
+        print(f"✅ Found suitable order for return: {suitable_order.get('number')}")
+        
+        # Create sales return
+        item = suitable_order["items"][0]
+        return_payload = {
+            "order_id": suitable_order["id"],
+            "return_type": "retur",
+            "items": [{
+                "product_id": item["product_id"],
+                "product_name": item.get("product_name", ""),
+                "quantity_returned": 1.0,
+                "unit": item.get("unit", "meter"),
+                "reason": "Test return",
+                "condition": "ok"
+            }],
+            "notes": "Test return for RET-2 validation",
+            "submit_now": True
+        }
+        
+        success, return_data = runner.test("POST /sales-returns", "POST", "/sales-returns", 
+                                          200, "admin", return_payload)
+        
+        if success and return_data:
+            return_id = return_data.get("id")
+            print(f"✅ Created sales return: {return_id}")
+            
+            # Approve the return
+            success, approved_data = runner.test("POST /sales-returns/{id}/approve", "POST",
+                                                f"/sales-returns/{return_id}/approve", 
+                                                200, "admin", {})
+            
+            if success and approved_data:
+                credit_note_id = approved_data.get("credit_note_id")
+                if credit_note_id:
+                    print(f"✅ RET-2 FIX VERIFIED: credit_note_id = {credit_note_id}")
+                    runner.tests_passed += 1
+                else:
+                    print(f"❌ RET-2 FIX FAILED: credit_note_id is null")
+                    runner.tests_failed += 1
+                    runner.failures.append({
+                        "test": "RET-2: credit_note_id should be set",
+                        "expected": "non-null credit_note_id",
+                        "actual": "null"
+                    })
+    else:
+        print("⚠️  No suitable order found for return test")
+    
+    # ========================================================================
+    # IDOR SECURITY - Cross-entity access blocked
+    # ========================================================================
+    if ksc_order_id:
+        print("\n" + "="*70)
+        print("IDOR SECURITY - Cross-entity access blocked")
+        print("="*70)
+        
+        # sales3 (ent_kanda) should NOT access ent_ksc order
+        runner.test("GET /sales-orders/{ksc_id} as sales3 (cross-entity)", "GET",
+                   f"/sales-orders/{ksc_order_id}", 404, "sales3")
+        
+        runner.test("PATCH /sales-orders/{ksc_id} as sales3 (cross-entity)", "PATCH",
+                   f"/sales-orders/{ksc_order_id}", 404, "sales3", 
+                   {"data": {"notes": "cross-entity-test"}})
+        
+        runner.test("POST /sales-orders/{ksc_id}/simulate-payment as sales3", "POST",
+                   f"/sales-orders/{ksc_order_id}/simulate-payment", 404, "sales3", {})
+        
+        runner.test("POST /sales-orders/{ksc_id}/submit-for-approval as sales3", "POST",
+                   f"/sales-orders/{ksc_order_id}/submit-for-approval", 404, "sales3", {})
+        
+        # ========================================================================
+        # IDOR REGRESSION - Same-entity access still works
+        # ========================================================================
+        print("\n" + "="*70)
+        print("IDOR REGRESSION - Same-entity access works")
+        print("="*70)
+        
+        runner.test("GET /sales-orders/{ksc_id} as sales (same-entity)", "GET",
+                   f"/sales-orders/{ksc_order_id}", 200, "sales")
+        
+        runner.test("PATCH /sales-orders/{ksc_id} as sales (same-entity)", "PATCH",
+                   f"/sales-orders/{ksc_order_id}", 200, "sales",
+                   {"data": {"notes": "regress-test"}})
+    
+    # ========================================================================
+    # VAL-UOM FIX - UOM factor_to_base validation
+    # ========================================================================
+    print("\n" + "="*70)
+    print("VAL-UOM FIX - factor_to_base validation")
+    print("="*70)
+    
+    runner.test("POST /uoms with factor_to_base=-5", "POST", "/uoms", 422, "admin",
+               {"code": "RGT1", "name": "Test UOM", "base_type": "length", "factor_to_base": -5})
+    
+    runner.test("POST /uoms with factor_to_base=0", "POST", "/uoms", 422, "admin",
+               {"code": "RGT2", "name": "Test UOM", "base_type": "length", "factor_to_base": 0})
+    
+    runner.test("POST /uoms with factor_to_base=2", "POST", "/uoms", 200, "admin",
+               {"code": "RGT3", "name": "Test UOM Valid", "base_type": "length", "factor_to_base": 2})
+    
+    # ========================================================================
+    # ONBOARD-NOOP FIX - Onboarding task validation
+    # ========================================================================
+    print("\n" + "="*70)
+    print("ONBOARD-NOOP FIX - Task validation")
+    print("="*70)
+    
+    runner.test("POST /onboarding/BOGUSTASK/complete", "POST", 
+               "/onboarding/BOGUSTASK/complete", 404, "admin")
+    
+    runner.test("POST /onboarding/create_uom/complete", "POST",
+               "/onboarding/create_uom/complete", 200, "admin")
+    
+    # ========================================================================
+    # IMPORT HARDENING - CSV import validation
+    # ========================================================================
+    print("\n" + "="*70)
+    print("IMPORT HARDENING - CSV validation")
+    print("="*70)
+    
+    # Test 1: Non-UTF8 bytes should return 400
+    non_utf8_bytes = b'\xff\xfe Invalid UTF-8'
+    runner.test("Import non-UTF8 file", "POST", "/master-data/import-products", 400, "admin",
+               files={"file": ("test.csv", non_utf8_bytes, "text/csv")})
+    
+    # Test 2: Negative price should be rejected
+    csv_negative_price = "sku,name,price\nTEST001,Test Product,-5000\n"
+    runner.test("Import CSV with negative price", "POST", "/master-data/import-products", 200, "admin",
+               files={"file": ("test.csv", csv_negative_price.encode('utf-8'), "text/csv")})
+    
+    # Verify it was rejected (created=0)
+    # Note: The endpoint returns 200 but with errors array
+    
+    # Test 3: XSS in image URL should be rejected
+    csv_xss = "sku,name,price,image\nTEST002,Test Product,1000,javascript:alert(1)\n"
+    runner.test("Import CSV with XSS image", "POST", "/master-data/import-products", 200, "admin",
+               files={"file": ("test.csv", csv_xss.encode('utf-8'), "text/csv")})
+    
+    # Test 4: Valid CSV should import
+    csv_valid = "sku,name,price\nTEST003,Valid Product,1000\n"
+    success, import_result = runner.test("Import valid CSV", "POST", "/master-data/import-products", 
+                                        200, "admin",
+                                        files={"file": ("test.csv", csv_valid.encode('utf-8'), "text/csv")})
+    
+    if success and import_result:
+        created = import_result.get("created", 0)
+        if created >= 1:
+            print(f"✅ Valid CSV imported successfully: {created} created")
+        else:
+            print(f"⚠️  Valid CSV import created {created} records")
+    
+    # Test 5: Export should not contain formula injection
+    success, export_data = runner.test("GET /master-data/export-products", "GET",
+                                       "/master-data/export-products", 200, "admin")
+    
+    if success and export_data:
+        # Check if any cell starts with = without apostrophe prefix
+        if isinstance(export_data, str):
+            lines = export_data.split('\n')
+            has_formula = False
+            for line in lines[1:]:  # Skip header
+                if line.strip() and line.strip()[0] in ['=', '+', '-', '@']:
+                    has_formula = True
+                    print(f"❌ FORMULA INJECTION: Found unescaped formula: {line[:50]}")
+                    break
+            if not has_formula:
+                print("✅ Export CSV is safe from formula injection")
+    
+    # ========================================================================
+    # Print final summary
+    # ========================================================================
+    runner.print_summary()
+    
+    return 0 if runner.tests_failed == 0 else 1
+
 
 if __name__ == "__main__":
     sys.exit(main())

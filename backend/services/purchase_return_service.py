@@ -155,7 +155,13 @@ async def approve_and_adjust_stock(return_id: str, approved_by: str, notes: str 
         from routers.purchase_orders import recompute_po_payment_status
         await recompute_po_payment_status(ret["po_id"])
 
-    return safe_doc(await db.purchase_returns.find_one({"id": return_id}, {"_id": 0}))
+    # S#074 (PRET-GL): posting jurnal retur beli (Dr Hutang/GR-IR / Cr Persediaan [+ reversal PPN])
+    fresh = await db.purchase_returns.find_one({"id": return_id}, {"_id": 0})
+    from services import gl_service
+    await gl_service.post_purchase_return(
+        fresh, amount=float(fresh.get("total_amount", 0) or 0),
+        ppn=float(fresh.get("ppn_amount", 0) or fresh.get("ppn", 0) or 0), label=debit_note)
+    return safe_doc(fresh)
 
 
 async def reject_purchase_return(return_id: str, rejected_by: str, reason: str) -> Dict[str, Any]:

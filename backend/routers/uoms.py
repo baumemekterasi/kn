@@ -30,6 +30,18 @@ async def create_uom(payload: UOMPayload, request: Request) -> Dict[str, Any]:
 async def update_uom(uom_id: str, payload: GenericPatch, request: Request) -> Dict[str, Any]:
     actor = await require_permission(request, "uom", "update")
     data = {k: v for k, v in payload.data.items() if k in ["code", "name", "base_type", "precision", "status", "factor_to_base"]}
+    if "factor_to_base" in data:                              # S#074 VAL-UOM
+        try:
+            if float(data["factor_to_base"]) <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="factor_to_base harus angka > 0")
+    if "precision" in data:
+        try:
+            if int(data["precision"]) < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="precision harus angka >= 0")
     data["updated_at"] = now_iso()
     uom = await db.uoms.find_one_and_update(
         {"id": uom_id}, {"$set": data},

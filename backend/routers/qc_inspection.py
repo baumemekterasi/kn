@@ -12,6 +12,7 @@ from dependencies import require_permission, audit
 from core_utils import safe_doc
 from schemas import RollInspectionInput
 from services.qc_inspection_service import rolls_for_task, inspect_roll, grade_thresholds
+from entity_scope import entity_ctx, assert_entity_access
 
 router = APIRouter(prefix="/api")
 
@@ -40,6 +41,7 @@ async def inspect(roll_id: str, payload: RollInspectionInput, request: Request) 
     roll = safe_doc(await db.inventory_rolls.find_one({"id": roll_id}, {"_id": 0}))
     if not roll:
         raise HTTPException(status_code=404, detail="Roll tidak ditemukan")
+    assert_entity_access(roll, "inventory_rolls", await entity_ctx(request))  # S#074 IDOR-WRITE
 
     defects = [d.dict() for d in (payload.defects or [])]
     for d in defects:

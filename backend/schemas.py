@@ -235,8 +235,8 @@ class UOMPayload(BaseModel):
     code: str
     name: str
     base_type: str = "length"
-    precision: int = 2
-    factor_to_base: float = 1.0          # Sub-fase 1.13 — meter per 1 unit (FIXED, length only)
+    precision: int = Field(2, ge=0)
+    factor_to_base: float = Field(1.0, gt=0)   # S#074 VAL-UOM: faktor konversi harus > 0
 
 
 class TemplatePayload(BaseModel):

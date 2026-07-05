@@ -131,9 +131,12 @@ async def get_return(return_id: str, request: Request) -> Dict[str, Any]:
 @router.post("/sales-returns/{return_id}/submit")
 async def submit_return(return_id: str, request: Request) -> Dict[str, Any]:
     user = await require_permission(request, "sales_return", "update")
+    ctx = await entity_ctx(request)
     doc = await db.sales_returns.find_one({"id": return_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Return tidak ditemukan")
+    doc.pop("_id", None)
+    assert_entity_access(doc, "sales_returns", ctx)
     if doc["status"] != "draft":
         raise HTTPException(status_code=400, detail="Hanya draft yang bisa disubmit")
     await db.sales_returns.update_one(
@@ -158,6 +161,12 @@ async def approve_return(
     payload: SalesReturnDecision = SalesReturnDecision(),
 ) -> Dict[str, Any]:
     user = await require_permission(request, "sales_return", "approve")
+    ctx = await entity_ctx(request)
+    existing = await db.sales_returns.find_one({"id": return_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Return tidak ditemukan")
+    existing.pop("_id", None)
+    assert_entity_access(existing, "sales_returns", ctx)
     doc = await return_service.approve_and_adjust_stock(
         return_id=return_id,
         approved_by=user.get("name", user.get("email", "")),
@@ -177,6 +186,12 @@ async def reject_return(
     payload: SalesReturnDecision = SalesReturnDecision(),
 ) -> Dict[str, Any]:
     user = await require_permission(request, "sales_return", "reject")
+    ctx = await entity_ctx(request)
+    existing = await db.sales_returns.find_one({"id": return_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Return tidak ditemukan")
+    existing.pop("_id", None)
+    assert_entity_access(existing, "sales_returns", ctx)
     doc = await return_service.reject_return(
         return_id=return_id,
         rejected_by=user.get("name", user.get("email", "")),
@@ -248,6 +263,16 @@ async def download_attachment(return_id: str, att_id: str, request: Request):
 @router.delete("/sales-returns/{return_id}/attachments/{att_id}")
 async def delete_attachment(return_id: str, att_id: str, request: Request) -> Dict[str, Any]:
     user = await require_permission(request, "sales_return", "update")
+    ctx = await entity_ctx(request)
+    doc = await db.sales_returns.find_one({"id": return_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Return tidak ditemukan")
+    doc.pop("_id", None)
+    assert_entity_access(doc, "sales_returns", ctx)
+    att = next((a for a in (doc.get("attachments") or [])
+                if a.get("id") == att_id and not a.get("is_deleted")), None)
+    if not att:
+        raise HTTPException(status_code=404, detail="Lampiran tidak ditemukan")
     await db.sales_returns.update_one(
         {"id": return_id, "attachments.id": att_id},
         {"$set": {"attachments.$.is_deleted": True, "updated_at": now_iso()}}

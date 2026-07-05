@@ -22,7 +22,7 @@ from services.so_status import stage_fields, derive_stage_substatus, SUBSTATUS_L
 from routers.price_approvals import get_effective_special_price
 from services.uom_service import to_base, load_fixed_factors
 from services.customer_service import evaluate_credit_gate, resolve_customer_sales_team
-from entity_scope import entity_ctx, resolve_list_scope, stamp_entity
+from entity_scope import entity_ctx, resolve_list_scope, stamp_entity, assert_entity_access
 from services import costing_service
 from services import pricelist_service
 from services.sales_order_helpers import (
@@ -587,12 +587,17 @@ async def get_order(order_id: str, request: Request) -> Dict[str, Any]:
     order = safe_doc(await db.sales_orders.find_one({"id": order_id}, {"_id": 0}))
     if not order:
         raise HTTPException(status_code=404, detail="Order tidak ditemukan")
+    assert_entity_access(order, "sales_orders", await entity_ctx(request))  # S#074 IDOR
     return strip_cost_fields(_norm_backorder(order), actor.get("role"))
 
 
 @router.patch("/sales-orders/{order_id}")
 async def update_order(order_id: str, payload: GenericPatch, request: Request) -> Dict[str, Any]:
     actor = await require_permission(request, "order", "update")
+    existing = await db.sales_orders.find_one({"id": order_id}, {"_id": 0, "entity_id": 1})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Order tidak ditemukan")
+    assert_entity_access(existing, "sales_orders", await entity_ctx(request))  # S#074 IDOR
     allowed = ["sales_name", "shipment_policy", "notes"]
     data = {k: v for k, v in payload.data.items() if k in allowed}
     data["updated_at"] = now_iso()
@@ -612,6 +617,7 @@ async def submit_for_approval(order_id: str, request: Request) -> Dict[str, Any]
     order = safe_doc(await db.sales_orders.find_one({"id": order_id}, {"_id": 0}))
     if not order:
         raise HTTPException(status_code=404, detail="Order tidak ditemukan")
+    assert_entity_access(order, "sales_orders", await entity_ctx(request))  # S#074 IDOR
     # Fase 1B — re-evaluasi kebutuhan approval dari matriks (configurable) basis grand_total
     amount = float(order.get("grand_total", order.get("total_amount", 0)) or 0)
     appr = await evaluate_approval("sales_order", amount, order.get("entity_id"))
@@ -670,6 +676,7 @@ async def approve_order(order_id: str, request: Request) -> Dict[str, Any]:
     order = safe_doc(await db.sales_orders.find_one({"id": order_id}, {"_id": 0}))
     if not order:
         raise HTTPException(status_code=404, detail="Order tidak ditemukan")
+    assert_entity_access(order, "sales_orders", await entity_ctx(request))  # S#074 IDOR
     required = order.get("required_approval_role")
     if not role_satisfies(actor.get("role"), required):
         raise HTTPException(status_code=403,
@@ -720,6 +727,7 @@ async def mark_delivered(order_id: str, request: Request) -> Dict[str, Any]:
     order = safe_doc(await db.sales_orders.find_one({"id": order_id}, {"_id": 0}))
     if not order:
         raise HTTPException(status_code=404, detail="Order tidak ditemukan")
+    assert_entity_access(order, "sales_orders", await entity_ctx(request))  # S#074 IDOR
     if order["status"] != "shipped":
         raise HTTPException(status_code=409,
                             detail=f"Hanya order 'shipped' yang bisa ditandai diterima (saat ini '{order['status']}').")
@@ -737,6 +745,7 @@ async def release_reservation(order_id: str, request: Request) -> Dict[str, Any]
     order = safe_doc(await db.sales_orders.find_one({"id": order_id}, {"_id": 0}))
     if not order:
         raise HTTPException(status_code=404, detail="Order tidak ditemukan")
+    assert_entity_access(order, "sales_orders", await entity_ctx(request))  # S#074 IDOR
     if order["status"] not in ["reserved", "waiting_approval", "approved", "waiting_stock"]:
         raise HTTPException(status_code=409, detail="Order tidak dalam status yang di-reserve")
     # Release reservations di level ROLL (KN_15)
@@ -766,6 +775,7 @@ async def cancel_order(order_id: str, request: Request) -> Dict[str, Any]:
     order = safe_doc(await db.sales_orders.find_one({"id": order_id}, {"_id": 0}))
     if not order:
         raise HTTPException(status_code=404, detail="Order tidak ditemukan")
+    assert_entity_access(order, "sales_orders", await entity_ctx(request))  # S#074 IDOR
     if order["status"] in ["done", "cancelled", "expired", "partially_shipped", "shipped"]:
         raise HTTPException(status_code=409, detail="Order tidak bisa dibatalkan (sudah terkirim sebagian/penuh atau terminal)")
     if order["status"] in ["reserved", "waiting_approval", "approved", "confirmed", "waiting_stock",

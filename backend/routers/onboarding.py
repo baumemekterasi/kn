@@ -1,6 +1,6 @@
 """Onboarding router: per-role checklists for first-time users."""
 from typing import Any, Dict, List
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from db import db
 from dependencies import current_user, audit
 from core_utils import now_iso, safe_doc
@@ -65,6 +65,9 @@ async def get_onboarding(request: Request) -> Dict[str, Any]:
 @router.post("/onboarding/{task_id}/complete")
 async def complete_task(task_id: str, request: Request) -> Dict[str, Any]:
     user = await current_user(request)
+    valid_ids = {item["id"] for item in ROLE_CHECKLISTS.get(user["role"], [])}
+    if task_id not in valid_ids:                              # S#074 ONBOARD-NOOP
+        raise HTTPException(status_code=404, detail="Task onboarding tidak dikenal untuk role ini")
     await db.user_onboarding.update_one(
         {"user_id": user["id"]},
         {"$addToSet": {"completed": task_id}, "$set": {"updated_at": now_iso()}},

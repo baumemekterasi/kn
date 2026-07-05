@@ -5,7 +5,7 @@ from pymongo import ReturnDocument
 from db import db
 from dependencies import require_permission, audit
 from core_utils import new_id, now_iso, safe_doc, DEFAULT_ENTITY_ID
-from entity_scope import entity_ctx, resolve_list_scope
+from entity_scope import entity_ctx, resolve_list_scope, assert_entity_access
 from schemas import ScannerScan, WMSTaskCreate
 from services.shipment_service import dispatch_task
 from services.roll_service import create_inbound_roll
@@ -116,6 +116,7 @@ async def scan_task(task_id: str, payload: ScannerScan, request: Request) -> Dic
     task = safe_doc(await db.wms_tasks.find_one({"id": task_id}, {"_id": 0}))
     if not task:
         raise HTTPException(status_code=404, detail="Task tidak ditemukan")
+    assert_entity_access(task, "wms_tasks", await entity_ctx(request))  # S#074 IDOR
     if task["status"] in ["done", "dispatched", "cancelled"]:
         raise HTTPException(status_code=409, detail="Task terminal: scan baru diblokir")
     scan_entry = {
@@ -145,6 +146,7 @@ async def advance_task(task_id: str, request: Request) -> Dict[str, Any]:
     task = safe_doc(await db.wms_tasks.find_one({"id": task_id}, {"_id": 0}))
     if not task:
         raise HTTPException(status_code=404, detail="Task tidak ditemukan")
+    assert_entity_access(task, "wms_tasks", await entity_ctx(request))  # S#074 IDOR
     stages = task.get("stages", FLOW_STAGES.get(task["flow_type"], ["created", "done"]))
     current_idx = stages.index(task["status"]) if task["status"] in stages else 0
     if current_idx >= len(stages) - 1:

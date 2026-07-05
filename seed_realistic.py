@@ -2896,6 +2896,17 @@ async def seed_all(db_instance=None):
         "purchase_requisitions": await db.purchase_requisitions.count_documents({}),
         "bank_accounts": await db.bank_accounts.count_documents({}),
     }
+    # S#074 (INV-GL-DRIFT): true-up saldo awal GL Persediaan agar == nilai subledger rolls.
+    # Seed meng-insert rolls langsung (bypass GL); tanpa ini GL 1-1300 << nilai fisik.
+    try:
+        import sys as _sys
+        _sys.path.insert(0, "/app/backend")
+        from services import gl_service as _gl
+        await _gl.seed_default_coa()
+        _op = await _gl.post_inventory_opening_balance(actor_name="seed")
+        summary["inventory_opening_je"] = _op.get("count", 0)
+    except Exception as _e:  # noqa: BLE001
+        print(f"  [warn] opening-balance true-up dilewati: {_e}")
     return summary
 
 
